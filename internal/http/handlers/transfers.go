@@ -8,6 +8,7 @@ import (
 	"github.com/go-ledger/internal/ledger"
 	"github.com/go-ledger/internal/money"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type transferReq struct {
@@ -53,7 +54,8 @@ func Transfer(svc *ledger.Service) http.HandlerFunc {
 			case errors.Is(err, ledger.ErrSameAccount), errors.Is(err, ledger.ErrValidation):
 				writeErr(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
 			default:
-				if containsInsufficientFunds(err) {
+				var pgErr *pgconn.PgError
+				if errors.As(err, &pgErr) && pgErr.Code == "23514" {
 					writeErr(w, http.StatusConflict, "insufficient_funds", "insufficient funds")
 					return
 				}
@@ -63,21 +65,4 @@ func Transfer(svc *ledger.Service) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusCreated, map[string]string{"transaction_id": txID.String()})
 	}
-}
-
-func containsInsufficientFunds(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return contains(s, "insufficient_funds") || contains(s, "would go negative")
-}
-func contains(s, sub string) bool { return len(s) >= len(sub) && search(s, sub) }
-func search(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }

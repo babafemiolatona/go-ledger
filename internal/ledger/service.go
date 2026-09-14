@@ -2,11 +2,13 @@ package ledger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -108,10 +110,6 @@ func (s *Service) Transfer(ctx context.Context, fromID, toID uuid.UUID, amountMi
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	ids := []uuid.UUID{fromID, toID}
-	if ids[0].String() > ids[1].String() {
-		ids[0], ids[1] = ids[1], ids[0]
-	}
 	rows, err := tx.Query(ctx,
 		`SELECT id, currency, status, is_system FROM accounts WHERE id IN ($1,$2) ORDER BY id FOR UPDATE`,
 		fromID, toID)
@@ -182,6 +180,10 @@ func (s *Service) Transfer(ctx context.Context, fromID, toID uuid.UUID, amountMi
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23514" {
+			return uuid.Nil, fmt.Errorf("%w: %w", ErrInsufficientFunds, err)
+		}
 		return uuid.Nil, err
 	}
 	return txID, nil

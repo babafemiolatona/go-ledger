@@ -3,7 +3,8 @@ export
 
 .PHONY: up down logs test lint seed migrate-up migrate-down
 
-DATABASE_URL ?= postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:5432/$(POSTGRES_DB)?sslmode=disable
+# Host-side URL (always localhost) — don't use .env's DATABASE_URL which may contain @db for containers
+DATABASE_URL := postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:5432/$(POSTGRES_DB)?sslmode=disable
 MIGRATE ?= go run github.com/pressly/goose/v3/cmd/goose@latest -dir db/migrations postgres "$(DATABASE_URL)"
 
 up:
@@ -23,7 +24,7 @@ lint:
 	gofmt -l .
 
 seed:
-	docker compose exec -T db psql -U ledger -d ledger -v ON_ERROR_STOP=1 -f - < db/seed.sql
+	docker compose exec -T db psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -v ON_ERROR_STOP=1 -f - < db/seed.sql
 
 migrate-up:
 	@test -d db/migrations || (echo "no db/migrations yet (M1)"; exit 1)

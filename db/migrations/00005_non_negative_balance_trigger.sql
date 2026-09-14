@@ -13,6 +13,9 @@ BEGIN
     AND le.status = 'posted'
   GROUP BY le.account_id
   HAVING COALESCE(SUM(CASE WHEN le.direction='credit' THEN le.amount ELSE -le.amount END),0) < 0
+  -- LIMIT 1 ceiling: this trigger only blocks the first negative-balance account per commit. Multi-leg
+  -- transactions that make >1 account negative in the same commit are not fully guarded and rely on
+  -- reconciliation (M7) as the backstop. Revisit when M8 multi-currency/FX is implemented.
   LIMIT 1;
 
   -- also check all touched accounts even if not in NEW (defensive: check any posted negative touched by this tx)

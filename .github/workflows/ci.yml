@@ -27,6 +27,9 @@ jobs:
 
       - run: go build ./...
       - run: go vet ./...
+      - run: go run github.com/pressly/goose/v3/cmd/goose@latest -dir db/migrations postgres "$DATABASE_URL" up
+        env:
+          DATABASE_URL: postgres://ledger:ledger@localhost:5432/ledger?sslmode=disable
       - run: go test ./... -race -count=1
         env:
           DATABASE_URL: postgres://ledger:ledger@localhost:5432/ledger?sslmode=disable

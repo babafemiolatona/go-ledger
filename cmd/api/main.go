@@ -17,6 +17,7 @@ import (
 	"github.com/go-ledger/internal/db"
 	"github.com/go-ledger/internal/http/handlers"
 	apmw "github.com/go-ledger/internal/http/middleware"
+	"github.com/go-ledger/internal/ledger"
 )
 
 func main() {
@@ -45,6 +46,8 @@ func run() error {
 	}
 	defer pool.Close()
 
+	svc := ledger.New(pool)
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(apmw.RequestLogger(log))
@@ -52,6 +55,12 @@ func run() error {
 
 	r.Get("/healthz", handlers.Healthz)
 	r.Get("/readyz", handlers.Readyz(pool))
+
+	r.Route("/v1", func(r chi.Router) {
+		r.Post("/accounts", handlers.CreateAccount(svc))
+		r.Get("/accounts/{id}/balance", handlers.GetBalance(svc))
+		r.Post("/transfers", handlers.Transfer(svc))
+	})
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

@@ -3,7 +3,6 @@ export
 
 .PHONY: up down logs test lint seed migrate-up migrate-down
 
-# Host-side URL (always localhost) — don't use .env's DATABASE_URL which may contain @db for containers
 DATABASE_URL := postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:5432/$(POSTGRES_DB)?sslmode=disable
 MIGRATE ?= go run github.com/pressly/goose/v3/cmd/goose@latest -dir db/migrations postgres "$(DATABASE_URL)"
 

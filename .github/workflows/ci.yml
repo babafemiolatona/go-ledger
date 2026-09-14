@@ -1,0 +1,32 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: {POSTGRES_USER}
+          POSTGRES_PASSWORD: {POSTGRES_PASSWORD}
+          POSTGRES_DB: {POSTGRES_DB}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ledger -d ledger"
+          --health-interval 5s --health-timeout 5s --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./... -race -count=1
+        env:
+          DATABASE_URL: postgres://ledger:ledger@localhost:5432/ledger?sslmode=disable

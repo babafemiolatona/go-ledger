@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-ledger/internal/ledger"
@@ -46,19 +47,21 @@ func Transfer(svc *ledger.Service) http.HandlerFunc {
 		}
 		key := r.Header.Get("Idempotency-Key")
 		if key != "" {
-			txID, replayed, err := svc.TransferIdempotent(r.Context(), ledger.ScopeTransfer, key, fromID, toID, amount, req.Currency)
+			txID, replayed, code, respBody, err := svc.TransferIdempotentWithResponse(r.Context(), ledger.ScopeTransfer, key, fromID, toID, amount, req.Currency)
 			if err != nil {
 				mapTransferErr(w, err)
 				return
 			}
 			if replayed {
 				w.Header().Set("X-Idempotent-Replay", "true")
-				if code, body, _, rerr := svc.IdempotentResponse(r.Context(), ledger.ScopeTransfer, key, fromID); rerr == nil && code != 0 && len(body) != 0 {
+				if code != 0 && len(respBody) != 0 {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(code)
-					_, _ = w.Write(body)
+					_, _ = w.Write(respBody)
 					return
 				}
+				slog.Warn("idempotent replay missing stored response, falling back to fresh envelope",
+					"scope", ledger.ScopeTransfer, "key", key, "transaction_id", txID.String(), "code", code, "body_len", len(respBody))
 			}
 			writeJSON(w, http.StatusCreated, map[string]string{"transaction_id": txID.String()})
 			return

@@ -2,6 +2,9 @@ package ledger
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+const ScopeTransfer = "transfer"
 
 type Service struct {
 	pool *pgxpool.Pool
@@ -111,13 +116,14 @@ func (s *Service) Transfer(ctx context.Context, fromID, toID uuid.UUID, amountMi
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	rows, err := tx.Query(ctx,
-		`SELECT id, currency, status, is_system FROM accounts WHERE id IN ($1,$2) ORDER BY id FOR UPDATE`,
+		`SELECT id, owner_id, currency, status, is_system FROM accounts WHERE id IN ($1,$2) ORDER BY id FOR UPDATE`,
 		fromID, toID)
 	if err != nil {
 		return uuid.Nil, err
 	}
 	type acctRow struct {
 		id       uuid.UUID
+		ownerID  uuid.UUID
 		currency string
 		status   string
 		isSystem bool
@@ -125,7 +131,7 @@ func (s *Service) Transfer(ctx context.Context, fromID, toID uuid.UUID, amountMi
 	found := map[uuid.UUID]acctRow{}
 	for rows.Next() {
 		var r acctRow
-		if err := rows.Scan(&r.id, &r.currency, &r.status, &r.isSystem); err != nil {
+		if err := rows.Scan(&r.id, &r.ownerID, &r.currency, &r.status, &r.isSystem); err != nil {
 			rows.Close()
 			return uuid.Nil, err
 		}
@@ -187,4 +193,154 @@ func (s *Service) Transfer(ctx context.Context, fromID, toID uuid.UUID, amountMi
 		return uuid.Nil, err
 	}
 	return txID, nil
+}
+
+func (s *Service) TransferIdempotent(ctx context.Context, scope, key string, fromID, toID uuid.UUID, amountMinor int64, currency string) (txID uuid.UUID, replayed bool, err error) {
+	if strings.TrimSpace(key) == "" {
+		txID, err = s.Transfer(ctx, fromID, toID, amountMinor, currency)
+		return txID, false, err
+	}
+	if amountMinor <= 0 {
+		return uuid.Nil, false, fmt.Errorf("%w: amount must be > 0", ErrValidation)
+	}
+	if fromID == toID {
+		return uuid.Nil, false, ErrSameAccount
+	}
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	if len(currency) != 3 {
+		return uuid.Nil, false, fmt.Errorf("%w: currency required", ErrValidation)
+	}
+	switch scope {
+	case ScopeTransfer, "hold", "capture", "release", "withdrawal", "deposit", "payment":
+	default:
+		return uuid.Nil, false, fmt.Errorf("%w: invalid scope", ErrValidation)
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// ORDER BY id ... FOR UPDATE provides deadlock-free lock ordering for A->B / B->A concurrent pairs — do not remove.
+	rows, err := tx.Query(ctx,
+		`SELECT id, owner_id, currency, status, is_system FROM accounts WHERE id IN ($1,$2) ORDER BY id FOR UPDATE`,
+		fromID, toID)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	type acctRow struct {
+		id       uuid.UUID
+		ownerID  uuid.UUID
+		currency string
+		status   string
+		isSystem bool
+	}
+	found := map[uuid.UUID]acctRow{}
+	for rows.Next() {
+		var r acctRow
+		if err := rows.Scan(&r.id, &r.ownerID, &r.currency, &r.status, &r.isSystem); err != nil {
+			rows.Close()
+			return uuid.Nil, false, err
+		}
+		found[r.id] = r
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return uuid.Nil, false, err
+	}
+	src, ok := found[fromID]
+	if !ok {
+		return uuid.Nil, false, fmt.Errorf("%w: source account", ErrNotFound)
+	}
+	dst, ok := found[toID]
+	if !ok {
+		return uuid.Nil, false, fmt.Errorf("%w: destination account", ErrNotFound)
+	}
+	if src.status != "active" || dst.status != "active" {
+		return uuid.Nil, false, fmt.Errorf("%w: account not active", ErrValidation)
+	}
+	if src.currency != currency || dst.currency != currency {
+		return uuid.Nil, false, fmt.Errorf("%w: currency mismatch", ErrValidation)
+	}
+
+	var srcBalance int64
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(SUM(CASE WHEN direction='credit' THEN amount ELSE -amount END),0)
+		 FROM ledger_entries WHERE account_id=$1 AND status='posted'`, fromID).Scan(&srcBalance); err != nil {
+		return uuid.Nil, false, err
+	}
+	if !src.isSystem && srcBalance < amountMinor {
+		return uuid.Nil, false, ErrInsufficientFunds
+	}
+
+	// Claim key AFTER balance check so insufficient leaves no row (same key retryable after funding).
+	userID := src.ownerID
+	reqHash := hashIdempotencyRequest(userID, scope, key, fromID, toID, amountMinor, currency)
+	var dummy uuid.UUID
+	err = tx.QueryRow(ctx,
+		`INSERT INTO idempotency_keys (user_id, scope, key, status, request_hash)
+		 VALUES ($1,$2,$3,'in_progress',$4)
+		 ON CONFLICT (user_id, scope, key) DO NOTHING RETURNING user_id`,
+		userID, scope, key, reqHash).Scan(&dummy)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			// Conflict: replay or 409/422 without touching ledger.
+			var st, storedHash string
+			var storedTx *string
+			err2 := tx.QueryRow(ctx,
+				`SELECT status, request_hash, transaction_id::text FROM idempotency_keys
+				 WHERE user_id=$1 AND scope=$2 AND key=$3`,
+				userID, scope, key).Scan(&st, &storedHash, &storedTx)
+			if err2 != nil {
+				return uuid.Nil, false, err2
+			}
+			if st == "in_progress" || st == "failed" {
+				return uuid.Nil, false, ErrIdempotencyInFlight
+			}
+			if storedHash != reqHash {
+				return uuid.Nil, false, ErrIdempotencyMismatch
+			}
+			if storedTx == nil {
+				return uuid.Nil, false, ErrIdempotencyInFlight
+			}
+			id, perr := uuid.Parse(*storedTx)
+			if perr != nil {
+				return uuid.Nil, false, perr
+			}
+			return id, true, nil
+		}
+		return uuid.Nil, false, err
+	}
+
+	var newTxID uuid.UUID
+	if err := tx.QueryRow(ctx, `INSERT INTO transactions (type) VALUES ('transfer') RETURNING id`).Scan(&newTxID); err != nil {
+		return uuid.Nil, false, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO ledger_entries (transaction_id, account_id, direction, amount, currency, status)
+		 VALUES ($1,$2,'debit',$4,$5,'posted'), ($1,$3,'credit',$4,$5,'posted')`,
+		newTxID, fromID, toID, amountMinor, currency); err != nil {
+		return uuid.Nil, false, err
+	}
+	body, _ := json.Marshal(map[string]string{"transaction_id": newTxID.String()})
+	if _, err := tx.Exec(ctx,
+		`UPDATE idempotency_keys SET status='completed', transaction_id=$1, response_code=201, response_body=$2
+		 WHERE user_id=$3 AND scope=$4 AND key=$5`,
+		newTxID, string(body), userID, scope, key); err != nil {
+		return uuid.Nil, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23514" {
+			return uuid.Nil, false, fmt.Errorf("%w: %w", ErrInsufficientFunds, err)
+		}
+		return uuid.Nil, false, err
+	}
+	return newTxID, false, nil
+}
+
+func hashIdempotencyRequest(userID uuid.UUID, scope, key string, fromID, toID uuid.UUID, amountMinor int64, currency string) string {
+	h := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%s|%s|%d|%s", userID.String(), scope, key, fromID.String(), toID.String(), amountMinor, currency)))
+	return hex.EncodeToString(h[:])
 }

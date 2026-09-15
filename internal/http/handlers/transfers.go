@@ -44,25 +44,46 @@ func Transfer(svc *ledger.Service) http.HandlerFunc {
 			writeErr(w, http.StatusBadRequest, "validation_error", "currency is required")
 			return
 		}
+		key := r.Header.Get("Idempotency-Key")
+		if key != "" {
+			txID, replayed, err := svc.TransferIdempotent(r.Context(), ledger.ScopeTransfer, key, fromID, toID, amount, req.Currency)
+			if err != nil {
+				mapTransferErr(w, err)
+				return
+			}
+			if replayed {
+				w.Header().Set("X-Idempotent-Replay", "true")
+			}
+			writeJSON(w, http.StatusCreated, map[string]string{"transaction_id": txID.String()})
+			return
+		}
 		txID, err := svc.Transfer(r.Context(), fromID, toID, amount, req.Currency)
 		if err != nil {
-			switch {
-			case errors.Is(err, ledger.ErrInsufficientFunds):
-				writeErr(w, http.StatusConflict, "insufficient_funds", "insufficient funds")
-			case errors.Is(err, ledger.ErrNotFound):
-				writeErr(w, http.StatusNotFound, "account_not_found", err.Error())
-			case errors.Is(err, ledger.ErrSameAccount), errors.Is(err, ledger.ErrValidation):
-				writeErr(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
-			default:
-				var pgErr *pgconn.PgError
-				if errors.As(err, &pgErr) && pgErr.Code == "23514" {
-					writeErr(w, http.StatusConflict, "insufficient_funds", "insufficient funds")
-					return
-				}
-				writeErr(w, http.StatusInternalServerError, "internal_error", "internal error")
-			}
+			mapTransferErr(w, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, map[string]string{"transaction_id": txID.String()})
+	}
+}
+
+func mapTransferErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ledger.ErrInsufficientFunds):
+		writeErr(w, http.StatusConflict, "insufficient_funds", "insufficient funds")
+	case errors.Is(err, ledger.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "account_not_found", err.Error())
+	case errors.Is(err, ledger.ErrIdempotencyInFlight):
+		writeErr(w, http.StatusConflict, "idempotency_in_progress", err.Error())
+	case errors.Is(err, ledger.ErrIdempotencyMismatch):
+		writeErr(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+	case errors.Is(err, ledger.ErrSameAccount), errors.Is(err, ledger.ErrValidation):
+		writeErr(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+	default:
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23514" {
+			writeErr(w, http.StatusConflict, "insufficient_funds", "insufficient funds")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "internal_error", "internal error")
 	}
 }

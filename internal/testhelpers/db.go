@@ -41,12 +41,18 @@ func TestPool(t *testing.T) *pgxpool.Pool {
 
 func AcquireAdvisoryLock(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	_, err := pool.Exec(context.Background(), `SELECT pg_advisory_lock($1)`, int64(727727))
+	ctx := context.Background()
+	conn, err := pool.Acquire(ctx)
 	if err != nil {
+		t.Fatalf("acquire conn for advisory lock: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, int64(727727)); err != nil {
+		conn.Release()
 		t.Fatalf("advisory lock: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, int64(727727))
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, int64(727727))
+		conn.Release()
 	})
 }
 

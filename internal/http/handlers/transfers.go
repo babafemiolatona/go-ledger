@@ -53,6 +53,12 @@ func Transfer(svc *ledger.Service) http.HandlerFunc {
 			}
 			if replayed {
 				w.Header().Set("X-Idempotent-Replay", "true")
+				if code, body, _, rerr := svc.IdempotentResponse(r.Context(), ledger.ScopeTransfer, key, fromID); rerr == nil && code != 0 && len(body) != 0 {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(code)
+					_, _ = w.Write(body)
+					return
+				}
 			}
 			writeJSON(w, http.StatusCreated, map[string]string{"transaction_id": txID.String()})
 			return

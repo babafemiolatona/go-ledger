@@ -17,6 +17,13 @@ import (
 
 const ScopeTransfer = "transfer"
 
+type IdempotencyOutcome struct {
+	TxID       uuid.UUID
+	Replayed   bool
+	StatusCode int
+	Body       []byte
+}
+
 type Service struct {
 	pool *pgxpool.Pool
 }
@@ -343,4 +350,33 @@ func (s *Service) TransferIdempotent(ctx context.Context, scope, key string, fro
 func hashIdempotencyRequest(userID uuid.UUID, scope, key string, fromID, toID uuid.UUID, amountMinor int64, currency string) string {
 	h := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%s|%s|%d|%s", userID.String(), scope, key, fromID.String(), toID.String(), amountMinor, currency)))
 	return hex.EncodeToString(h[:])
+}
+
+// IdempotentResponse reads back the stored response_code/response_body for a
+// replayed key per ARCHITECTURE.md §6.2 (replay returns the stored response
+// verbatim). userID is resolved server-side from the source account owner,
+// mirroring TransferIdempotent's derivation pre-M4.5.
+func (s *Service) IdempotentResponse(ctx context.Context, scope, key string, fromID uuid.UUID) (code int, body []byte, txID uuid.UUID, err error) {
+	var ownerID uuid.UUID
+	if err := s.pool.QueryRow(ctx, `SELECT owner_id FROM accounts WHERE id=$1`, fromID).Scan(&ownerID); err != nil {
+		return 0, nil, uuid.Nil, err
+	}
+	var codePtr *int
+	var bodyRaw []byte
+	var txPtr *string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT response_code, response_body, transaction_id::text FROM idempotency_keys
+		 WHERE user_id=$1 AND scope=$2 AND key=$3`,
+		ownerID, scope, key).Scan(&codePtr, &bodyRaw, &txPtr); err != nil {
+		return 0, nil, uuid.Nil, err
+	}
+	if codePtr != nil {
+		code = *codePtr
+	}
+	if txPtr != nil {
+		if id, perr := uuid.Parse(*txPtr); perr == nil {
+			txID = id
+		}
+	}
+	return code, bodyRaw, txID, nil
 }

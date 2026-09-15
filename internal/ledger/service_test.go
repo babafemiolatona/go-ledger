@@ -176,6 +176,7 @@ func TestTransfer_Concurrency(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var observedNegative atomic.Bool
+	var readerErr atomic.Value // stores error, checked on main goroutine after wgReader.Wait()
 	var wgReader sync.WaitGroup
 	wgReader.Add(1)
 	go func() {
@@ -187,12 +188,17 @@ func TestTransfer_Concurrency(t *testing.T) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				bal := testhelpers.RawBalance(t, pool, src)
-				if bal < 0 {
+				var bal int64
+				if err := pool.QueryRow(context.Background(),
+					`SELECT COALESCE(SUM(CASE WHEN direction='credit' THEN amount ELSE -amount END),0) FROM ledger_entries WHERE account_id=$1 AND status='posted'`, src).Scan(&bal); err != nil {
+					readerErr.Store(err)
+				} else if bal < 0 {
 					observedNegative.Store(true)
 				}
 				b, err := svc.GetBalance(context.Background(), src)
-				if err == nil && b.Available < 0 {
+				if err != nil {
+					readerErr.Store(err)
+				} else if b.Available < 0 {
 					observedNegative.Store(true)
 				}
 			}
@@ -229,6 +235,9 @@ func TestTransfer_Concurrency(t *testing.T) {
 	cancel()
 	wgReader.Wait()
 
+	if v := readerErr.Load(); v != nil {
+		t.Fatalf("background balance reader: %v", v.(error))
+	}
 	if observedNegative.Load() {
 		t.Fatal("observed negative balance during storm")
 	}

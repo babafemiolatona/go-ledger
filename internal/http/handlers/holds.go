@@ -80,14 +80,14 @@ func CaptureHold(svc *ledger.Service) http.HandlerFunc {
 		}
 		holdID, _ := uuid.Parse(chi.URLParam(r, "id"))
 		if !ledger.IsService(r.Context()) {
-			var srcID uuid.UUID
-			_ = svc.Pool().QueryRow(r.Context(), `SELECT account_id FROM ledger_entries WHERE transaction_id=$1 AND direction='debit' LIMIT 1`, holdID).Scan(&srcID)
-			if srcID != uuid.Nil {
-				owner, _ := svc.GetAccountOwner(r.Context(), srcID)
-				if owner != callerID {
-					WriteErr(w, 403, "forbidden", "not owner of hold")
-					return
-				}
+			_, owner, err := svc.GetHoldSourceOwner(r.Context(), holdID)
+			if err != nil {
+				WriteErr(w, 404, "not_found", "hold not found")
+				return
+			}
+			if owner != callerID {
+				WriteErr(w, 403, "forbidden", "not owner of hold")
+				return
 			}
 		}
 		if err := svc.Capture(r.Context(), holdID); err != nil {
@@ -110,14 +110,14 @@ func ReleaseHold(svc *ledger.Service) http.HandlerFunc {
 		}
 		holdID, _ := uuid.Parse(chi.URLParam(r, "id"))
 		if !ledger.IsService(r.Context()) {
-			var srcID uuid.UUID
-			_ = svc.Pool().QueryRow(r.Context(), `SELECT account_id FROM ledger_entries WHERE transaction_id=$1 AND direction='debit' LIMIT 1`, holdID).Scan(&srcID)
-			if srcID != uuid.Nil {
-				owner, _ := svc.GetAccountOwner(r.Context(), srcID)
-				if owner != callerID {
-					WriteErr(w, 403, "forbidden", "not owner of hold")
-					return
-				}
+			_, owner, err := svc.GetHoldSourceOwner(r.Context(), holdID)
+			if err != nil {
+				WriteErr(w, 404, "not_found", "hold not found")
+				return
+			}
+			if owner != callerID {
+				WriteErr(w, 403, "forbidden", "not owner of hold")
+				return
 			}
 		}
 		if err := svc.Release(r.Context(), holdID); err != nil {

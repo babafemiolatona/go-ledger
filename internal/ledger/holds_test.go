@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -122,12 +123,21 @@ func TestHold_ConcurrencyAvailable(t *testing.T) {
 	svc := New(pool)
 	src, esc := newHoldPair(t, svc, 100000)
 	var succ int
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 	for i := 0; i < 6; i++ {
-		_, err := svc.Hold(context.Background(), src, esc, 20000, "USD", time.Now().Add(time.Hour))
-		if err == nil {
-			succ++
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := svc.Hold(context.Background(), src, esc, 20000, "USD", time.Now().Add(time.Hour))
+			if err == nil {
+				mu.Lock()
+				succ++
+				mu.Unlock()
+			}
+		}()
 	}
+	wg.Wait()
 	if succ != 5 {
 		t.Fatalf("hold succ %d want 5", succ)
 	}

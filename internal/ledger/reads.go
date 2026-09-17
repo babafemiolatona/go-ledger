@@ -68,11 +68,14 @@ func (s *Service) GetStatement(ctx context.Context, accountID uuid.UUID, cursor 
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, transaction_id, direction, amount, currency, status, created_at,
-		       SUM(CASE WHEN direction='credit' THEN amount ELSE -amount END) OVER (ORDER BY id) AS running_balance,
-		       (SELECT type FROM transactions WHERE id=transaction_id) AS tx_type
-		FROM ledger_entries
-		WHERE account_id=$1 AND id > $2
+		SELECT id, transaction_id, direction, amount, currency, status, created_at, running_balance, tx_type FROM (
+		  SELECT id, transaction_id, direction, amount, currency, status, created_at,
+		         SUM(CASE WHEN direction='credit' THEN amount ELSE -amount END) OVER (ORDER BY id) AS running_balance,
+		         (SELECT type FROM transactions WHERE id=transaction_id) AS tx_type
+		  FROM ledger_entries
+		  WHERE account_id=$1
+		) sub
+		WHERE id > $2
 		ORDER BY id ASC
 		LIMIT $3`, accountID, cursor, limit+1)
 	if err != nil {

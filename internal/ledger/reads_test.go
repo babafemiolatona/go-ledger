@@ -166,6 +166,51 @@ func TestReads_StatementPaginationNoGapsDupes(t *testing.T) {
 	}
 }
 
+func TestReads_StatementRunningBalanceAcrossPages(t *testing.T) {
+	pool := testhelpers.TestPool(t)
+	testhelpers.AcquireAdvisoryLock(t, pool)
+	src, dst := testhelpers.NewFundedPair(t, pool, 100000)
+	svc := New(pool)
+	for i := 0; i < 10; i++ {
+		if _, err := svc.Transfer(context.Background(), src, dst, 1000, "USD"); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+	full, err := svc.GetStatement(context.Background(), src, 0, 100)
+	if err != nil {
+		t.Fatalf("full: %v", err)
+	}
+	byID := map[int64]int64{}
+	for _, e := range full.Entries {
+		byID[e.ID] = e.RunningBalance
+	}
+	// first page 5
+	p1, err := svc.GetStatement(context.Background(), src, 0, 5)
+	if err != nil {
+		t.Fatalf("p1: %v", err)
+	}
+	if len(p1.Entries) != 5 || p1.NextCursor == nil {
+		t.Fatalf("p1 len %d", len(p1.Entries))
+	}
+	// second page via cursor
+	p2, err := svc.GetStatement(context.Background(), src, *p1.NextCursor, 5)
+	if err != nil {
+		t.Fatalf("p2: %v", err)
+	}
+	for _, e := range p2.Entries {
+		if byID[e.ID] != e.RunningBalance {
+			t.Fatalf("running_balance mismatch at id %d: paginated %d != full %d", e.ID, e.RunningBalance, byID[e.ID])
+		}
+	}
+	// also check first entry of p2 continues correctly from last of p1
+	if len(p2.Entries) > 0 && len(p1.Entries) > 0 {
+		expected := byID[p2.Entries[0].ID]
+		if p2.Entries[0].RunningBalance != expected {
+			t.Fatalf("p2 first RB %d want %d", p2.Entries[0].RunningBalance, expected)
+		}
+	}
+}
+
 func TestReads_StatementUnderConcurrentWrites(t *testing.T) {
 	pool := testhelpers.TestPool(t)
 	testhelpers.AcquireAdvisoryLock(t, pool)

@@ -99,6 +99,20 @@ func (s *Service) Hold(ctx context.Context, srcID, dstID uuid.UUID, amount int64
 	return holdID, nil
 }
 
+func (s *Service) GetHoldSourceOwner(ctx context.Context, holdID uuid.UUID) (srcID, ownerID uuid.UUID, err error) {
+	if err := s.pool.QueryRow(ctx, `SELECT account_id FROM ledger_entries WHERE transaction_id=$1 AND direction='debit' LIMIT 1`, holdID).Scan(&srcID); err != nil {
+		if err == pgx.ErrNoRows {
+			return uuid.Nil, uuid.Nil, ErrNotFound
+		}
+		return uuid.Nil, uuid.Nil, err
+	}
+	ownerID, err = s.GetAccountOwner(ctx, srcID)
+	if err != nil {
+		return uuid.Nil, uuid.Nil, err
+	}
+	return srcID, ownerID, nil
+}
+
 func (s *Service) Capture(ctx context.Context, holdID uuid.UUID) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

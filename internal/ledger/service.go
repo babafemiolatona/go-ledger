@@ -260,7 +260,6 @@ func (s *Service) doTransferIdempotent(ctx context.Context, scope, key string, f
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// ORDER BY id ... FOR UPDATE provides deadlock-free lock ordering for A->B / B->A concurrent pairs — do not remove.
 	rows, err := tx.Query(ctx,
 		`SELECT id, owner_id, currency, status, is_system FROM accounts WHERE id IN ($1,$2) ORDER BY id FOR UPDATE`,
 		fromID, toID)
@@ -312,8 +311,10 @@ func (s *Service) doTransferIdempotent(ctx context.Context, scope, key string, f
 		return uuid.Nil, false, 0, nil, ErrInsufficientFunds
 	}
 
-	// Claim key AFTER balance check so insufficient leaves no row (same key retryable after funding).
 	userID := src.ownerID
+	if callerID, _, ok := CallerFromContext(ctx); ok {
+		userID = callerID
+	}
 	reqHash := hashIdempotencyRequest(userID, scope, key, fromID, toID, amountMinor, currency)
 	var dummy uuid.UUID
 	err = tx.QueryRow(ctx,

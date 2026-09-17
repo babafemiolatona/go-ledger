@@ -114,7 +114,7 @@ func (s *Service) GetBalance(ctx context.Context, accountID uuid.UUID) (Balance,
 	b.Currency = currency
 	b.Posted = posted
 	b.Pending = pending
-	b.Available = posted
+	b.Available = posted + pending
 	return b, nil
 }
 

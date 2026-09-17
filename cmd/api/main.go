@@ -71,6 +71,9 @@ func run() error {
 		r.Get("/api-keys", handlers.ListApiKeys(svc))
 		r.Post("/api-keys", handlers.CreateApiKey(svc))
 		r.Delete("/api-keys/{id}", handlers.RevokeApiKey(svc))
+		r.Post("/holds", handlers.CreateHold(svc))
+		r.Post("/holds/{id}/capture", handlers.CaptureHold(svc))
+		r.Post("/holds/{id}/release", handlers.ReleaseHold(svc))
 	})
 
 	srv := &http.Server{

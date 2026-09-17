@@ -5,6 +5,8 @@ import (
 	"net/http"
 )
 
+var WriteErr = writeErr
+
 type errBody struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`

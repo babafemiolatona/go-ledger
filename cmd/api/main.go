@@ -56,13 +56,19 @@ func run() error {
 	r.Get("/healthz", handlers.Healthz)
 	r.Get("/readyz", handlers.Readyz(pool))
 
+	r.Post("/v1/users", handlers.CreateUser(svc))
+
 	r.Route("/v1", func(r chi.Router) {
+		r.Use(apmw.Auth(svc))
 		r.Post("/accounts", handlers.CreateAccount(svc))
 		r.Get("/accounts", handlers.ListAccounts(svc))
 		r.Get("/accounts/{id}/statement", handlers.GetStatement(svc))
 		r.Get("/transactions/{id}", handlers.GetTransaction(svc))
 		r.Get("/accounts/{id}/balance", handlers.GetBalance(svc))
 		r.Post("/transfers", handlers.Transfer(svc))
+		r.Get("/api-keys", handlers.ListApiKeys(svc))
+		r.Post("/api-keys", handlers.CreateApiKey(svc))
+		r.Delete("/api-keys/{id}", handlers.RevokeApiKey(svc))
 	})
 
 	srv := &http.Server{

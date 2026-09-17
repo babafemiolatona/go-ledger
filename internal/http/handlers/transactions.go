@@ -16,6 +16,11 @@ func GetTransaction(svc *ledger.Service) http.HandlerFunc {
 			writeErr(w, http.StatusBadRequest, "validation_error", "invalid transaction id")
 			return
 		}
+		callerID, _, ok := ledger.CallerFromContext(r.Context())
+		if !ok {
+			WriteErr(w, http.StatusUnauthorized, "unauthorized", "missing auth")
+			return
+		}
 		d, err := svc.GetTransaction(r.Context(), txID)
 		if err != nil {
 			if errors.Is(err, ledger.ErrNotFound) {
@@ -24,6 +29,17 @@ func GetTransaction(svc *ledger.Service) http.HandlerFunc {
 			}
 			writeErr(w, http.StatusInternalServerError, "internal_error", "internal error")
 			return
+		}
+		if !ledger.IsService(r.Context()) {
+			owns, err := svc.IsTransactionOwner(r.Context(), txID, callerID)
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, "internal_error", "internal error")
+				return
+			}
+			if !owns {
+				WriteErr(w, http.StatusForbidden, "forbidden", "not owner")
+				return
+			}
 		}
 		writeJSON(w, http.StatusOK, d)
 	}

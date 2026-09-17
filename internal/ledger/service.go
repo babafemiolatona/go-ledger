@@ -23,6 +23,31 @@ type Service struct {
 
 func New(pool *pgxpool.Pool) *Service { return &Service{pool: pool} }
 
+func (s *Service) Pool() *pgxpool.Pool { return s.pool }
+
+func (s *Service) GetAccountOwner(ctx context.Context, accountID uuid.UUID) (uuid.UUID, error) {
+	var ownerID uuid.UUID
+	err := s.pool.QueryRow(ctx, `SELECT owner_id FROM accounts WHERE id=$1`, accountID).Scan(&ownerID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return uuid.Nil, ErrNotFound
+		}
+		return uuid.Nil, err
+	}
+	return ownerID, nil
+}
+
+func (s *Service) IsTransactionOwner(ctx context.Context, txID uuid.UUID, callerID uuid.UUID) (bool, error) {
+	var cnt int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM ledger_entries le JOIN accounts a ON a.id=le.account_id
+		 WHERE le.transaction_id=$1 AND a.owner_id=$2`, txID, callerID).Scan(&cnt)
+	if err != nil {
+		return false, err
+	}
+	return cnt > 0, nil
+}
+
 type Account struct {
 	ID       uuid.UUID `json:"id"`
 	OwnerID  uuid.UUID `json:"owner_id"`

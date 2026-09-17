@@ -17,6 +17,24 @@ func GetBalance(svc *ledger.Service) http.HandlerFunc {
 			writeErr(w, http.StatusBadRequest, "validation_error", "invalid account id")
 			return
 		}
+		callerID, _, ok := ledger.CallerFromContext(r.Context())
+		if !ok {
+			WriteErr(w, http.StatusUnauthorized, "unauthorized", "missing auth")
+			return
+		}
+		ownerID, err := svc.GetAccountOwner(r.Context(), acctID)
+		if err != nil {
+			if errors.Is(err, ledger.ErrNotFound) {
+				writeErr(w, http.StatusNotFound, "account_not_found", "account not found")
+				return
+			}
+			writeErr(w, http.StatusInternalServerError, "internal_error", "internal error")
+			return
+		}
+		if !ledger.IsService(r.Context()) && ownerID != callerID {
+			WriteErr(w, http.StatusForbidden, "forbidden", "not owner")
+			return
+		}
 		bal, err := svc.GetBalance(r.Context(), acctID)
 		if err != nil {
 			if errors.Is(err, ledger.ErrNotFound) {

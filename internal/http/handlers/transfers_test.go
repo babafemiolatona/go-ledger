@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -13,6 +14,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func callerCtxForAccount(t *testing.T, svc *ledger.Service, acctID uuid.UUID) context.Context {
+	t.Helper()
+	owner, err := svc.GetAccountOwner(t.Context(), acctID)
+	if err != nil {
+		t.Fatalf("get owner: %v", err)
+	}
+	return ledger.WithCaller(t.Context(), owner, "user", uuid.New(), "test")
+}
 
 func TestTransferHandler_InsufficientFunds409(t *testing.T) {
 	pool := testhelpers.TestPool(t)
@@ -29,6 +39,7 @@ func TestTransferHandler_InsufficientFunds409(t *testing.T) {
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/transfers", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(callerCtxForAccount(t, svc, src))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -66,6 +77,7 @@ func TestTransferHandler_PgError23514MapsTo409(t *testing.T) {
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/transfers", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(callerCtxForAccount(t, svc, src))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
@@ -80,10 +92,11 @@ func TestTransferHandler_PgError23514MapsTo409(t *testing.T) {
 	})
 	req2 := httptest.NewRequest(http.MethodPost, "/v1/transfers", bytes.NewReader(body2))
 	req2.Header.Set("Content-Type", "application/json")
+	req2 = req2.WithContext(callerCtxForAccount(t, svc, src))
 	rec2 := httptest.NewRecorder()
 	h.ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusNotFound {
-		t.Fatalf("fake src: status %d want 404", rec2.Code)
+		t.Fatalf("fake src: status %d want 404 body %s", rec2.Code, rec2.Body.String())
 	}
 }
 
@@ -101,10 +114,11 @@ func TestTransferHandler_Validation(t *testing.T) {
 		"currency":        "USD",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/transfers", bytes.NewReader(body))
+	req = req.WithContext(callerCtxForAccount(t, svc, src))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("same account: status %d want 422", rec.Code)
+		t.Fatalf("same account: status %d want 422 body %s", rec.Code, rec.Body.String())
 	}
 
 	body, _ = json.Marshal(map[string]string{
@@ -114,6 +128,7 @@ func TestTransferHandler_Validation(t *testing.T) {
 		"currency":        "USD",
 	})
 	req = httptest.NewRequest(http.MethodPost, "/v1/transfers", bytes.NewReader(body))
+	req = req.WithContext(callerCtxForAccount(t, svc, src))
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnprocessableEntity {

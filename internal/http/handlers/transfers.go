@@ -45,6 +45,26 @@ func Transfer(svc *ledger.Service) http.HandlerFunc {
 			writeErr(w, http.StatusBadRequest, "validation_error", "currency is required")
 			return
 		}
+		callerID, _, ok := ledger.CallerFromContext(r.Context())
+		if !ok {
+			WriteErr(w, http.StatusUnauthorized, "unauthorized", "missing auth")
+			return
+		}
+		if !ledger.IsService(r.Context()) {
+			ownerID, err := svc.GetAccountOwner(r.Context(), fromID)
+			if err != nil {
+				if errors.Is(err, ledger.ErrNotFound) {
+					writeErr(w, http.StatusNotFound, "account_not_found", "account not found")
+					return
+				}
+				writeErr(w, http.StatusInternalServerError, "internal_error", "internal error")
+				return
+			}
+			if ownerID != callerID {
+				WriteErr(w, http.StatusForbidden, "forbidden", "not owner of source account")
+				return
+			}
+		}
 		key := r.Header.Get("Idempotency-Key")
 		if key != "" {
 			txID, replayed, code, respBody, err := svc.TransferIdempotentWithResponse(r.Context(), ledger.ScopeTransfer, key, fromID, toID, amount, req.Currency)

@@ -58,6 +58,9 @@ func run() error {
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Post("/accounts", handlers.CreateAccount(svc))
+		r.Get("/accounts", handlers.ListAccounts(svc))
+		r.Get("/accounts/{id}/statement", handlers.GetStatement(svc))
+		r.Get("/transactions/{id}", handlers.GetTransaction(svc))
 		r.Get("/accounts/{id}/balance", handlers.GetBalance(svc))
 		r.Post("/transfers", handlers.Transfer(svc))
 	})

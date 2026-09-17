@@ -1,0 +1,268 @@
+openapi: 3.1.0
+info:
+  title: go-ledger
+  version: 0.5.0
+  description: Go + PostgreSQL double-entry ledger API
+servers:
+  - url: http://localhost:8080
+    description: local
+
+security:
+  - bearerAuth: []
+
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { type: object, properties: { status: { type: string } } } } } }
+
+  /readyz:
+    get:
+      summary: Readiness (DB check)
+      security: []
+      responses:
+        '200': { description: ready }
+
+  /v1/users:
+    post:
+      summary: Create user (primary api-key issuance, AUTH-3)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                role: { type: string, enum: [user, service], default: user }
+      responses:
+        '201': { description: created, content: { application/json: { schema: { type: object, properties: { user_id: { type: string, format: uuid }, api_key: { type: string }, key_id: { type: string, format: uuid } } } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /v1/accounts:
+    post:
+      summary: Create account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [owner_id, currency, purpose]
+              properties:
+                owner_id: { type: string, format: uuid }
+                currency: { type: string, pattern: '^[A-Z]{3}$' }
+                purpose: { type: string, enum: [available, escrow, fees] }
+      responses:
+        '201': { description: created, content: { application/json: { schema: { $ref: '#/components/schemas/Account' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    get:
+      summary: List accounts by owner
+      parameters:
+        - name: owner_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { type: object, properties: { accounts: { type: array, items: { $ref: '#/components/schemas/Account' } } } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/accounts/{id}/balance:
+    get:
+      summary: Get balance (posted/pending/available derived via SUM)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Balance' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/accounts/{id}/statement:
+    get:
+      summary: Statement keyset pagination (cursor is ledger_entries.id)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: cursor
+          in: query
+          schema: { type: integer, format: int64, default: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/StatementPage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/transactions/{id}:
+    get:
+      summary: Get transaction detail (full entry set)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/TransactionDetail' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/transfers:
+    post:
+      summary: Transfer (idempotent)
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from_account_id, to_account_id, amount, currency]
+              properties:
+                from_account_id: { type: string, format: uuid }
+                to_account_id: { type: string, format: uuid }
+                amount: { type: string, description: 'decimal string, int64 minor units parsed via money.ParseAmount', example: '10.00' }
+                currency: { type: string, pattern: '^[A-Z]{3}$' }
+      responses:
+        '201': { description: created, content: { application/json: { schema: { type: object, properties: { transaction_id: { type: string, format: uuid } } } } }, headers: { X-Idempotent-Replay: { schema: { type: string } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /v1/api-keys:
+    get:
+      summary: List own api keys (prefix only)
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { type: object, properties: { keys: { type: array, items: { $ref: '#/components/schemas/ApiKey' } } } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      summary: Create additional api key
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { type: string, enum: [user, service] }
+      responses:
+        '201': { description: created, content: { application/json: { schema: { type: object, properties: { api_key: { type: string }, key: { $ref: '#/components/schemas/ApiKey' } } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/api-keys/{id}:
+    delete:
+      summary: Revoke api key
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: revoked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+
+  schemas:
+    Account:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        owner_id: { type: string, format: uuid }
+        currency: { type: string }
+        purpose: { type: string, enum: [available, escrow, fees] }
+        status: { type: string, enum: [active, closed, frozen] }
+        is_system: { type: boolean }
+
+    Balance:
+      type: object
+      properties:
+        account_id: { type: string, format: uuid }
+        currency: { type: string }
+        available: { type: integer, format: int64 }
+        posted: { type: integer, format: int64 }
+        pending: { type: integer, format: int64 }
+
+    StatementEntry:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        transaction_id: { type: string, format: uuid }
+        transaction_type: { type: string }
+        account_id: { type: string, format: uuid }
+        direction: { type: string, enum: [debit, credit] }
+        amount: { type: integer, format: int64 }
+        currency: { type: string }
+        status: { type: string, enum: [posted, pending] }
+        created_at: { type: string, format: date-time }
+        running_balance: { type: integer, format: int64 }
+        counterparty_account_id: { type: string, format: uuid, nullable: true }
+
+    StatementPage:
+      type: object
+      properties:
+        entries: { type: array, items: { $ref: '#/components/schemas/StatementEntry' } }
+        next_cursor: { type: integer, format: int64, nullable: true }
+
+    TransactionDetail:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string }
+        created_at: { type: string, format: date-time }
+        entries: { type: array, items: { $ref: '#/components/schemas/StatementEntry' } }
+
+    ApiKey:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        key_prefix: { type: string }
+        role: { type: string, enum: [user, service] }
+        status: { type: string, enum: [active, revoked] }
+        created_at: { type: string }
+
+    Error:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+
+  responses:
+    Unauthorized:
+      description: missing/invalid bearer token
+      content: { application/json: { schema: { type: object, properties: { error: { $ref: '#/components/schemas/Error' } } } } }
+    Forbidden:
+      description: not owner
+      content: { application/json: { schema: { type: object, properties: { error: { $ref: '#/components/schemas/Error' } } } } }
+    NotFound:
+      description: not found
+      content: { application/json: { schema: { type: object, properties: { error: { $ref: '#/components/schemas/Error' } } } } }
+    Conflict:
+      description: insufficient_funds or idempotency_in_progress
+      content: { application/json: { schema: { type: object, properties: { error: { $ref: '#/components/schemas/Error' } } } } }
+    ValidationError:
+      description: validation
+      content: { application/json: { schema: { type: object, properties: { error: { $ref: '#/components/schemas/Error' } } } } }

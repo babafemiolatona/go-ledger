@@ -55,6 +55,8 @@ func run() error {
 
 	r.Get("/healthz", handlers.Healthz)
 	r.Get("/readyz", handlers.Readyz(pool))
+	r.Get("/docs", handlers.Docs)
+	r.Get("/docs/openapi.yaml", handlers.OpenAPISpec)
 
 	r.Post("/v1/users", handlers.CreateUser(svc))
 

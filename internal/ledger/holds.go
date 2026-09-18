@@ -89,6 +89,7 @@ func (s *Service) Hold(ctx context.Context, srcID, dstID uuid.UUID, amount int64
 	if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (transaction_id, account_id, direction, amount, currency, status) VALUES ($1,$2,'debit',$4,$5,'pending'), ($1,$3,'credit',$4,$5,'pending')`, holdID, srcID, dstID, amount, currency); err != nil {
 		return uuid.Nil, err
 	}
+	_ = insertOutbox(ctx, tx, "transaction", holdID, "ledger.hold.created", map[string]any{"hold_id": holdID, "from": srcID, "to": dstID, "amount": amount, "currency": currency})
 	if err := tx.Commit(ctx); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23514" {
@@ -183,6 +184,7 @@ func (s *Service) Capture(ctx context.Context, holdID uuid.UUID) error {
 	if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (transaction_id, account_id, direction, amount, currency, status) VALUES ($1,$2,'debit',$4,$5,'posted'), ($1,$3,'credit',$4,$5,'posted')`, holdID, srcID, dstID, amount, currency); err != nil {
 		return err
 	}
+	_ = insertOutbox(ctx, tx, "transaction", holdID, "ledger.hold.captured", map[string]any{"hold_id": holdID})
 	return tx.Commit(ctx)
 }
 
@@ -242,5 +244,6 @@ func (s *Service) Release(ctx context.Context, holdID uuid.UUID) error {
 	if _, err := tx.Exec(ctx, `INSERT INTO ledger_entries (transaction_id, account_id, direction, amount, currency, status) VALUES ($1,$2,'credit',$4,$5,'pending'), ($1,$3,'debit',$4,$5,'pending')`, holdID, srcID, dstID, amount, currency); err != nil {
 		return err
 	}
+	_ = insertOutbox(ctx, tx, "transaction", holdID, "ledger.hold.released", map[string]any{"hold_id": holdID})
 	return tx.Commit(ctx)
 }

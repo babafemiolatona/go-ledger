@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-ledger/internal/config"
 	"github.com/go-ledger/internal/db"
+	"github.com/go-ledger/internal/ledger"
 )
 
 func main() {
@@ -23,6 +24,21 @@ func main() {
 	}
 	defer pool.Close()
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	svc := ledger.New(pool)
+
+	go func() {
+		for {
+			time.Sleep(30 * time.Second)
+			n, err := svc.SweepExpiredHolds(context.Background())
+			if err != nil {
+				log.Error("sweep", "err", err)
+				continue
+			}
+			if n > 0 {
+				log.Info("swept holds", "n", n)
+			}
+		}
+	}()
 
 	log.Info("worker started", "poll_ms", 1000)
 	for {

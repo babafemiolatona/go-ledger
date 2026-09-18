@@ -172,3 +172,10 @@ func LedgerEntryCount(t *testing.T, pool *pgxpool.Pool) int64 {
 	}
 	return n
 }
+
+func InsertUnbalancedEntry(t *testing.T, pool *pgxpool.Pool, a1, a2 uuid.UUID, amt int64, cur string) {
+	t.Helper()
+	var txID uuid.UUID
+	pool.QueryRow(context.Background(), `INSERT INTO transactions (type) VALUES ('transfer') RETURNING id`).Scan(&txID)
+	pool.Exec(context.Background(), `INSERT INTO ledger_entries (transaction_id, account_id, direction, amount, currency, status) VALUES ($1,$2,'debit',$3,$4,'posted')`, txID, a1, amt, cur)
+}

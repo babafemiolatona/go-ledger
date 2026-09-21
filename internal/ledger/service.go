@@ -209,7 +209,9 @@ func (s *Service) Transfer(ctx context.Context, fromID, toID uuid.UUID, amountMi
 	if err != nil {
 		return uuid.Nil, err
 	}
-	_ = insertOutbox(ctx, tx, "transaction", txID, "ledger.transfer.posted", map[string]any{"transaction_id": txID, "from": fromID, "to": toID, "amount": amountMinor, "currency": currency})
+	if err := insertOutbox(ctx, tx, "transaction", txID, "ledger.transfer.posted", map[string]any{"transaction_id": txID, "from": fromID, "to": toID, "amount": amountMinor, "currency": currency}); err != nil {
+		return uuid.Nil, err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		var pgErr *pgconn.PgError
@@ -325,7 +327,6 @@ func (s *Service) doTransferIdempotent(ctx context.Context, scope, key string, f
 		userID, scope, key, reqHash).Scan(&dummy)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			// Conflict: replay stored response without touching ledger (single consistent view).
 			var st, storedHash string
 			var storedTx *string
 			var storedCode *int
@@ -369,7 +370,9 @@ func (s *Service) doTransferIdempotent(ctx context.Context, scope, key string, f
 		newTxID, fromID, toID, amountMinor, currency); err != nil {
 		return uuid.Nil, false, 0, nil, err
 	}
-	_ = insertOutbox(ctx, tx, "transaction", newTxID, "ledger.transfer.posted", map[string]any{"transaction_id": newTxID, "from": fromID, "to": toID, "amount": amountMinor, "currency": currency})
+	if err := insertOutbox(ctx, tx, "transaction", newTxID, "ledger.transfer.posted", map[string]any{"transaction_id": newTxID, "from": fromID, "to": toID, "amount": amountMinor, "currency": currency}); err != nil {
+		return uuid.Nil, false, 0, nil, err
+	}
 	respBody, _ := json.Marshal(map[string]string{"transaction_id": newTxID.String()})
 	if _, err := tx.Exec(ctx,
 		`UPDATE idempotency_keys SET status='completed', transaction_id=$1, response_code=201, response_body=$2

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -16,14 +17,18 @@ func ListApiKeys(svc *ledger.Service) http.HandlerFunc {
 			WriteErr(w, 401, "unauthorized", "missing auth")
 			return
 		}
-		keys, _ := svc.ListApiKeys(r.Context(), uid)
+		keys, err := svc.ListApiKeys(r.Context(), uid)
+		if err != nil {
+			WriteErr(w, 500, "internal_error", "internal error")
+			return
+		}
 		writeJSON(w, 200, map[string]any{"keys": keys})
 	}
 }
 
 func CreateApiKey(svc *ledger.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, _, ok := ledger.CallerFromContext(r.Context())
+		uid, callerRole, ok := ledger.CallerFromContext(r.Context())
 		if !ok {
 			WriteErr(w, 401, "unauthorized", "missing auth")
 			return
@@ -32,8 +37,12 @@ func CreateApiKey(svc *ledger.Service) http.HandlerFunc {
 			Role string `json:"role"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		raw, info, err := svc.CreateApiKey(r.Context(), uid, req.Role)
+		raw, info, err := svc.CreateApiKey(r.Context(), uid, req.Role, callerRole)
 		if err != nil {
+			if errors.Is(err, ledger.ErrForbidden) {
+				WriteErr(w, 403, "forbidden", "only service callers may create service-role keys")
+				return
+			}
 			WriteErr(w, 400, "validation_error", err.Error())
 			return
 		}

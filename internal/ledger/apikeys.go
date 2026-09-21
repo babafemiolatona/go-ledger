@@ -36,12 +36,8 @@ type ApiKeyInfo struct {
 }
 
 func (s *Service) CreateUserWithKey(ctx context.Context, email, role string) (userID uuid.UUID, rawKey string, keyID uuid.UUID, err error) {
-	if role == "" {
-		role = "user"
-	}
-	if role != "user" && role != "service" {
-		return uuid.Nil, "", uuid.Nil, fmt.Errorf("%w: invalid role", ErrValidation)
-	}
+	_ = role
+	role = "user"
 	raw, hash, prefix := generateRawKey()
 	err = s.pool.QueryRow(ctx, `INSERT INTO users (email) VALUES ($1) RETURNING id`, email).Scan(&userID)
 	if err != nil {
@@ -55,9 +51,15 @@ func (s *Service) CreateUserWithKey(ctx context.Context, email, role string) (us
 	return
 }
 
-func (s *Service) CreateApiKey(ctx context.Context, userID uuid.UUID, role string) (raw string, info ApiKeyInfo, err error) {
+func (s *Service) CreateApiKey(ctx context.Context, userID uuid.UUID, role string, callerRole string) (raw string, info ApiKeyInfo, err error) {
 	if role == "" {
 		role = "user"
+	}
+	if role == "service" && callerRole != "service" {
+		return "", ApiKeyInfo{}, fmt.Errorf("%w: only service callers may create service-role keys", ErrForbidden)
+	}
+	if role != "user" && role != "service" {
+		return "", ApiKeyInfo{}, fmt.Errorf("%w: invalid role", ErrValidation)
 	}
 	raw, hash, prefix := generateRawKey()
 	err = s.pool.QueryRow(ctx, `INSERT INTO api_keys (user_id, key_hash, key_prefix, role) VALUES ($1,$2,$3,$4) RETURNING id, user_id, key_prefix, role, status`, userID, hash, prefix, role).Scan(&info.ID, &info.UserID, &info.Prefix, &info.Role, &info.Status)

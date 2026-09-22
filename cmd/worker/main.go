@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
@@ -40,6 +41,21 @@ func main() {
 		}
 	}()
 
+	webhookClient := &http.Client{Timeout: ledger.WebhookHTTPTimeout}
+	go func() {
+		for {
+			time.Sleep(5 * time.Second)
+			n, err := svc.DeliverDueWebhooks(context.Background(), webhookClient)
+			if err != nil {
+				log.Error("webhook delivery", "err", err)
+				continue
+			}
+			if n > 0 {
+				log.Info("webhooks delivered", "n", n)
+			}
+		}
+	}()
+
 	log.Info("worker started", "poll_ms", 1000)
 	for {
 		rows, err := pool.Query(context.Background(), `SELECT id, topic, payload FROM outbox WHERE published_at IS NULL ORDER BY id LIMIT 10 FOR UPDATE SKIP LOCKED`)
@@ -58,6 +74,11 @@ func main() {
 			}
 			log.Info("publish", "id", id, "topic", topic, "payload", string(payload))
 			ids = append(ids, id)
+			if n, err := svc.FanoutWebhooks(context.Background(), topic, payload); err != nil {
+				log.Error("webhook fanout", "outbox_id", id, "err", err)
+			} else if n > 0 {
+				log.Info("webhook fanout", "outbox_id", id, "deliveries", n)
+			}
 		}
 		rows.Close()
 		if len(ids) == 0 {

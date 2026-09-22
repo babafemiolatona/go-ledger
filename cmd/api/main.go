@@ -74,6 +74,9 @@ func run() error {
 		r.Post("/holds", handlers.CreateHold(svc))
 		r.Post("/holds/{id}/capture", handlers.CaptureHold(svc))
 		r.Post("/holds/{id}/release", handlers.ReleaseHold(svc))
+		r.Post("/webhooks", handlers.CreateWebhook(svc))
+		r.Get("/webhooks", handlers.ListWebhooks(svc))
+		r.Get("/webhooks/deliveries", handlers.ListWebhookDeliveries(svc))
 	})
 
 	srv := &http.Server{

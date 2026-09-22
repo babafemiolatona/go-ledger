@@ -58,7 +58,7 @@ func AcquireAdvisoryLock(t *testing.T, pool *pgxpool.Pool) {
 
 func TruncateAll(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	_, err := pool.Exec(context.Background(), `TRUNCATE ledger_entries, idempotency_keys, outbox, transactions, accounts, users CASCADE`)
+	_, err := pool.Exec(context.Background(), `TRUNCATE ledger_entries, idempotency_keys, outbox, webhook_deliveries, webhook_endpoints, transactions, accounts, users CASCADE`)
 	if err != nil {
 		_, err2 := pool.Exec(context.Background(), `TRUNCATE ledger_entries, idempotency_keys, transactions, accounts, users CASCADE`)
 		if err2 != nil {

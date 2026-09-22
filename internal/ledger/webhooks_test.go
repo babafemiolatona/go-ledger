@@ -5,8 +5,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-ledger/internal/testhelpers"
 	"github.com/google/uuid"
@@ -137,6 +139,64 @@ func TestWebhooks_DeadLetter(t *testing.T) {
 	}
 	if r.hits.Load() != int32(WebhookMaxAttempts) {
 		t.Fatalf("hits=%d want %d", r.hits.Load(), WebhookMaxAttempts)
+	}
+}
+
+func TestWebhooks_ConcurrentWorkersNeverDoubleDeliver(t *testing.T) {
+	svc, _, ep := setupEndpoint(t, 0)
+	ctx := context.Background()
+
+	// slow receiver so the two workers overlap while delivering
+	var hits atomic.Int32
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		time.Sleep(150 * time.Millisecond)
+		w.WriteHeader(200)
+	}))
+	t.Cleanup(slow.Close)
+	if _, err := svc.Pool().Exec(ctx, `UPDATE webhook_endpoints SET url=$2 WHERE id=$1`, ep.ID, slow.URL+"/hook"); err != nil {
+		t.Fatalf("repoint endpoint: %v", err)
+	}
+
+	if n, err := svc.FanoutWebhooks(ctx, "ledger.transfer.posted", []byte(`{}`)); err != nil || n != 1 {
+		t.Fatalf("fanout n=%d err=%v", n, err)
+	}
+	// 3 more deliveries for the same endpoint
+	for i := 0; i < 3; i++ {
+		if _, err := svc.Pool().Exec(ctx,
+			`INSERT INTO webhook_deliveries (endpoint_id, topic, payload) VALUES ($1,'ledger.transfer.posted','{}')`, ep.ID); err != nil {
+			t.Fatalf("seed delivery: %v", err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = svc.DeliverDueWebhooks(ctx, testClient())
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("worker %d: %v", i, err)
+		}
+	}
+	// 4 deliveries, 4 HTTP hits total: the atomic claim gave each row to
+	// exactly one worker. (With select-then-update, both workers would race
+	// on the same unlocked rows and hits would exceed 4.)
+	if got := hits.Load(); got != 4 {
+		t.Fatalf("receiver hits=%d want 4 (double delivery!)", got)
+	}
+	var bad int
+	if err := svc.Pool().QueryRow(ctx,
+		`SELECT count(*) FROM webhook_deliveries WHERE status!='delivered' OR attempts!=1`).Scan(&bad); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if bad != 0 {
+		t.Fatalf("%d deliveries not (delivered, attempts=1)", bad)
 	}
 }
 

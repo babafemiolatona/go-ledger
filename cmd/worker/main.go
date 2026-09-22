@@ -58,9 +58,11 @@ func main() {
 
 	log.Info("worker started", "poll_ms", 1000)
 	for {
-		rows, err := pool.Query(context.Background(), `SELECT id, topic, payload FROM outbox WHERE published_at IS NULL ORDER BY id LIMIT 10 FOR UPDATE SKIP LOCKED`)
+		rows, err := pool.Query(context.Background(), `UPDATE outbox SET attempts=attempts+1 WHERE id IN (
+			SELECT id FROM outbox WHERE published_at IS NULL ORDER BY id LIMIT 10 FOR UPDATE SKIP LOCKED
+		) RETURNING id, topic, payload`)
 		if err != nil {
-			log.Error("outbox query", "err", err)
+			log.Error("outbox claim", "err", err)
 			time.Sleep(time.Second)
 			continue
 		}
@@ -86,7 +88,7 @@ func main() {
 			continue
 		}
 		for _, id := range ids {
-			_, err := pool.Exec(context.Background(), `UPDATE outbox SET published_at=now(), attempts=attempts+1 WHERE id=$1`, id)
+			_, err := pool.Exec(context.Background(), `UPDATE outbox SET published_at=now() WHERE id=$1`, id)
 			if err != nil {
 				log.Error("outbox ack", "id", id, "err", err)
 			}

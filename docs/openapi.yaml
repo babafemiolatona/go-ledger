@@ -266,6 +266,9 @@ components:
       type: object
       properties:
         id: { type: string, format: uuid }
+        type: { type: string }
+        created_at: { type: string, format: date-time }
+        entries: { type: array, items: { $ref: '#/components/schemas/StatementEntry' } }
 
     WebhookEndpoint:
       type: object
@@ -288,11 +291,8 @@ components:
         last_error: { type: string, nullable: true }
         next_retry_at: { type: string, format: date-time }
         delivered_at: { type: string, format: date-time, nullable: true }
-        status: { type: string, enum: [queued, delivered, dead] }
+        status: { type: string, enum: [queued, in_flight, delivered, dead] }
         created_at: { type: string, format: date-time }
-        type: { type: string }
-        created_at: { type: string, format: date-time }
-        entries: { type: array, items: { $ref: '#/components/schemas/StatementEntry' } }
 
     ApiKey:
       type: object

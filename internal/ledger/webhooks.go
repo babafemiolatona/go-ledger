@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,6 +26,7 @@ const (
 	webhookBackoffBase = 5 * time.Second
 	webhookBackoffCap  = time.Hour
 	webhookBatchSize   = 10
+	webhookClaimLease  = 5 * time.Minute
 )
 
 func WebhookBackoff(attempt int) time.Duration {
@@ -64,17 +66,17 @@ type WebhookEndpoint struct {
 }
 
 type WebhookDelivery struct {
-	ID          int64     `json:"id"`
-	EndpointID  uuid.UUID `json:"endpoint_id"`
-	Topic       string    `json:"topic"`
-	Payload     string    `json:"payload"`
-	Attempts    int       `json:"attempts"`
-	LastStatus  *int      `json:"last_status,omitempty"`
-	LastError   *string   `json:"last_error,omitempty"`
-	NextRetryAt string    `json:"next_retry_at"`
-	DeliveredAt *string   `json:"delivered_at,omitempty"`
-	Status      string    `json:"status"`
-	CreatedAt   string    `json:"created_at"`
+	ID          int64           `json:"id"`
+	EndpointID  uuid.UUID       `json:"endpoint_id"`
+	Topic       string          `json:"topic"`
+	Payload     json.RawMessage `json:"payload"`
+	Attempts    int             `json:"attempts"`
+	LastStatus  *int            `json:"last_status,omitempty"`
+	LastError   *string         `json:"last_error,omitempty"`
+	NextRetryAt string          `json:"next_retry_at"`
+	DeliveredAt *string         `json:"delivered_at,omitempty"`
+	Status      string          `json:"status"`
+	CreatedAt   string          `json:"created_at"`
 }
 
 func generateWebhookSecret() (string, error) {
@@ -154,7 +156,7 @@ func (s *Service) ListWebhookDeliveries(ctx context.Context, ownerID uuid.UUID, 
 		args = append(args, *endpointID)
 	}
 	if status != "" {
-		if status != "queued" && status != "delivered" && status != "dead" {
+		if status != "queued" && status != "in_flight" && status != "delivered" && status != "dead" {
 			return nil, fmt.Errorf("%w: invalid status filter", ErrValidation)
 		}
 		q += fmt.Sprintf(` AND d.status=$%d`, len(args)+1)
@@ -169,12 +171,10 @@ func (s *Service) ListWebhookDeliveries(ctx context.Context, ownerID uuid.UUID, 
 	var out []WebhookDelivery
 	for r.Next() {
 		var d WebhookDelivery
-		var payload string
-		if err := r.Scan(&d.ID, &d.EndpointID, &d.Topic, &payload, &d.Attempts,
+		if err := r.Scan(&d.ID, &d.EndpointID, &d.Topic, &d.Payload, &d.Attempts,
 			&d.LastStatus, &d.LastError, &d.NextRetryAt, &d.DeliveredAt, &d.Status, &d.CreatedAt); err != nil {
 			return nil, err
 		}
-		d.Payload = payload
 		out = append(out, d)
 	}
 	return out, r.Err()
@@ -205,10 +205,20 @@ func (s *Service) DeliverDueWebhooks(ctx context.Context, client *http.Client) (
 		secret     string
 	}
 	r, err := s.pool.Query(ctx,
-		`SELECT d.id, d.endpoint_id, d.topic, d.payload::text, d.attempts, e.url, e.secret
-		 FROM webhook_deliveries d JOIN webhook_endpoints e ON e.id=d.endpoint_id
-		 WHERE d.status='queued' AND d.next_retry_at <= now() AND e.status='active'
-		 ORDER BY d.id LIMIT $1 FOR UPDATE OF d SKIP LOCKED`, webhookBatchSize)
+		`WITH due AS (
+		   SELECT d2.id FROM webhook_deliveries d2
+		   JOIN webhook_endpoints e2 ON e2.id=d2.endpoint_id
+		   WHERE d2.status IN ('queued','in_flight')
+		     AND d2.next_retry_at <= now()
+		     AND e2.status='active'
+		   ORDER BY d2.id LIMIT $1 FOR UPDATE OF d2 SKIP LOCKED
+		 )
+		 UPDATE webhook_deliveries d
+		 SET status='in_flight', attempts=attempts+1, next_retry_at=now()+($2::text::interval)
+		 FROM due, webhook_endpoints e
+		 WHERE d.id=due.id AND e.id=d.endpoint_id
+		 RETURNING d.id, d.endpoint_id, d.topic, d.payload::text, d.attempts, e.url, e.secret`,
+		webhookBatchSize, intervalLiteral(webhookClaimLease))
 	if err != nil {
 		return 0, err
 	}
@@ -230,18 +240,17 @@ func (s *Service) DeliverDueWebhooks(ctx context.Context, client *http.Client) (
 
 	delivered := 0
 	for _, j := range jobs {
-		status, derr := postWebhook(ctx, client, j.url, j.secret, j.id, j.topic, j.payload, j.attempts+1)
+		status, derr := postWebhook(ctx, client, j.url, j.secret, j.id, j.topic, j.payload, j.attempts)
 		if derr == nil && status >= 200 && status < 300 {
 			if _, err := s.pool.Exec(ctx,
 				`UPDATE webhook_deliveries SET status='delivered', delivered_at=now(),
-				 attempts=attempts+1, last_status=$2 WHERE id=$1`,
+				 last_status=$2 WHERE id=$1`,
 				j.id, status); err != nil {
 				return delivered, err
 			}
 			delivered++
 			continue
 		}
-		next := j.attempts + 1
 		var msg string
 		if derr != nil {
 			msg = derr.Error()
@@ -251,19 +260,19 @@ func (s *Service) DeliverDueWebhooks(ctx context.Context, client *http.Client) (
 		if len(msg) > 500 {
 			msg = msg[:500]
 		}
-		if next >= WebhookMaxAttempts {
+		if j.attempts >= WebhookMaxAttempts {
 			if _, err := s.pool.Exec(ctx,
-				`UPDATE webhook_deliveries SET status='dead', attempts=$2, last_status=$3,
-				 last_error=$4 WHERE id=$1`,
-				j.id, next, nullableStatus(status, derr), msg); err != nil {
+				`UPDATE webhook_deliveries SET status='dead', last_status=$2,
+				 last_error=$3 WHERE id=$1`,
+				j.id, nullableStatus(status, derr), msg); err != nil {
 				return delivered, err
 			}
 			continue
 		}
 		if _, err := s.pool.Exec(ctx,
-			`UPDATE webhook_deliveries SET attempts=$2, last_status=$3, last_error=$4,
-			 next_retry_at=now()+($5::text::interval) WHERE id=$1`,
-			j.id, next, nullableStatus(status, derr), msg, backoffInterval(next)); err != nil {
+			`UPDATE webhook_deliveries SET status='queued', last_status=$2, last_error=$3,
+			 next_retry_at=now()+($4::text::interval) WHERE id=$1`,
+			j.id, nullableStatus(status, derr), msg, backoffInterval(j.attempts)); err != nil {
 			return delivered, err
 		}
 	}
@@ -278,7 +287,11 @@ func nullableStatus(status int, derr error) *int {
 }
 
 func backoffInterval(attempt int) string {
-	return strconv.FormatInt(int64(WebhookBackoff(attempt)/time.Second), 10) + " seconds"
+	return intervalLiteral(WebhookBackoff(attempt))
+}
+
+func intervalLiteral(d time.Duration) string {
+	return strconv.FormatInt(int64(d/time.Second), 10) + " seconds"
 }
 
 func postWebhook(ctx context.Context, client *http.Client, rawURL, secret string, deliveryID int64, topic string, payload []byte, attempt int) (int, error) {
